@@ -1,201 +1,356 @@
 
-import os
+"""Update BTC closing prices and Fear & Greed data.
+
+Preserves historical observations and dashboard indicator rules.
+"""
+
 import json
+import os
 import re
 import sys
-import urllib.request
+import urllib.error
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+import urllib.request
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
-FILE = Path("index.html")
-CMC_URL = "https://pro-api.coinmarketcap.com/v3/cryptocurrency/quotes/historical"
-FG_URL = "https://api.alternative.me/fng/"
 UTC = timezone.utc
+HTML = Path("index.html")
+
+CMC_ENDPOINT = (
+    "https://pro-api.coinmarketcap.com/v3/"
+    "cryptocurrency/quotes/historical"
+)
+
+FG_ENDPOINT = "https://api.alternative.me/fng/"
 
 
-def fetch(url, params, headers=None):
-    url += "?" + urllib.parse.urlencode(params)
-    request = urllib.request.Request(
+def get_json(endpoint, params, headers=None):
+    url = endpoint + "?" + urllib.parse.urlencode(params)
+
+    req = urllib.request.Request(
         url,
-        headers=headers or {"Accept": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=40) as response:
-        return json.load(response)
-
-
-def parse_time(value):
-    return datetime.fromisoformat(
-        value.replace("Z", "+00:00")
-    ).astimezone(UTC)
-
-
-def main():
-    key = os.environ.get("CMC_API_KEY")
-    if not key:
-        raise RuntimeError("CMC_API_KEY secret is missing")
-
-    html = FILE.read_text(encoding="utf-8")
-
-    match = re.search(
-        r"const D=(\{[^\n]*\});",
-        html
-    )
-    if not match:
-        raise RuntimeError("Dashboard data object not found")
-
-    data = json.loads(match.group(1))
-    closes = data["c"]
-    fear = data["g"]
-
-    if len(closes) != len(fear):
-        raise RuntimeError("BTC and F&G arrays differ")
-
-    start = datetime.strptime(
-        data["start"], "%Y-%m-%d"
-    ).date()
-
-    last = start + timedelta(days=len(closes) - 1)
-    today = datetime.now(UTC).date()
-    final_day = today - timedelta(days=1)
-
-    if last >= final_day:
-        print("Already up to date")
-        return
-
-    first = last + timedelta(days=1)
-
-    if (final_day - first).days > 25:
-        raise RuntimeError(
-            "More than 26 days missing; manual review required"
-        )
-
-    # CoinMarketCap end-of-day quote, 23:59 UTC.
-    params = {
-        "id": "1",
-        "convert": "USD",
-        "interval": "24h",
-        "time_start": first.isoformat() + "T23:59:00Z",
-        "time_end": final_day.isoformat() + "T23:59:59Z",
-    }
-
-    cmc = fetch(
-        CMC_URL,
-        params,
-        {
+        headers={
             "Accept": "application/json",
-            "X-CMC_PRO_API_KEY": key,
+            **(headers or {}),
         },
     )
 
-    status = cmc.get("status", {})
-    if status.get("error_code", 0) != 0:
+    try:
+        with urllib.request.urlopen(req, timeout=45) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        message = exc.read(500).decode("utf-8", "replace")
         raise RuntimeError(
-            "CMC API error: " +
-            str(status.get("error_message"))
+            f"HTTP {exc.code} from {endpoint}: {message}"
+        ) from exc
+
+
+def utc_datetime(value):
+    return datetime.fromisoformat(
+        str(value).replace("Z", "+00:00")
+    ).astimezone(UTC)
+
+
+def cmc_prices(first, last, api_key):
+    start = datetime.combine(
+        first, time(23, 59), UTC
+    )
+
+    end = datetime.combine(
+        last + timedelta(days=1),
+        time(1, 0),
+        UTC,
+    )
+
+    end = min(end, datetime.now(UTC))
+
+    payload = get_json(
+        CMC_ENDPOINT,
+        {
+            "id": "1",
+            "convert": "USD",
+            "interval": "24h",
+            "time_start": start.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "time_end": end.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "aux": "search_interval",
+        },
+        {"X-CMC_PRO_API_KEY": api_key},
+    )
+
+    status = payload.get("status") or {}
+
+    if status.get("error_code") not in (0, None):
+        raise RuntimeError(
+            "CMC API error: "
+            + str(status.get("error_message"))
         )
 
-    print("CMC response data type:", type(cmc.get("data")).__name__)
-    print("CMC response data keys:", list(cmc.get("data", {}).keys()) if isinstance(cmc.get("data"), dict) else "not a dictionary")
-    
-    quotes = cmc.get("data", {}).get("1", {}).get(
-        "quotes", []
+    data = payload.get("data")
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "Unexpected CMC response: data is not an object"
+        )
+
+    btc = data.get("1")
+
+    if not isinstance(btc, dict):
+        raise RuntimeError(
+            "Unexpected CMC response: BTC object missing"
+        )
+
+    snapshots = btc.get("quotes")
+
+    if not isinstance(snapshots, list):
+        raise RuntimeError(
+            "Unexpected CMC response: quotes array missing"
+        )
+
+    print("CMC snapshots returned:", len(snapshots))
+
+    if not snapshots:
+        raise RuntimeError(
+            "CMC returned zero BTC snapshots. "
+            "Check API access, date range, and endpoint. "
+            "Dashboard was not changed."
+        )
+
+    result = {}
+
+    for item in snapshots:
+        stamp = utc_datetime(item["timestamp"])
+
+        label = item.get("search_interval")
+        interval_stamp = (
+            utc_datetime(label) if label else stamp
+        )
+
+        candidate_days = (
+            interval_stamp.date(),
+            interval_stamp.date() - timedelta(days=1),
+        )
+
+        closest = min(
+            candidate_days,
+            key=lambda d: abs(
+                (
+                    interval_stamp
+                    - datetime.combine(
+                        d, time(23, 59), UTC
+                    )
+                ).total_seconds()
+            ),
+        )
+
+        difference = abs(
+            (
+                interval_stamp
+                - datetime.combine(
+                    closest, time(23, 59), UTC
+                )
+            ).total_seconds()
+        )
+
+        if difference > 3600:
+            continue
+
+        if not first <= closest <= last:
+            continue
+
+        usd = (
+            (item.get("quote") or {}).get("USD") or {}
+        )
+
+        value = usd.get("price")
+
+        if (
+            not isinstance(value, (int, float))
+            or value <= 0
+        ):
+            raise RuntimeError(
+                f"Invalid CMC BTC price for {closest}"
+            )
+
+        if closest in result:
+            raise RuntimeError(
+                f"Duplicate CMC quote for {closest}"
+            )
+
+        result[closest] = round(float(value), 2)
+
+    print(
+        "CMC usable dates:",
+        ", ".join(map(str, sorted(result))) or "(none)",
     )
 
-    print("CMC quotes returned:", len(quotes))
-    for item in quotes[-5:]:
-        print("CMC timestamp:", item.get("timestamp"))
-        
-    prices = {}
+    return result
 
-    for item in quotes:
-        stamp = parse_time(item["timestamp"])
 
-        # Associate a quote with its nearest
-        # 23:59 UTC daily boundary.
-        day = stamp.date()
-        target = datetime.combine(
-            day,
-            datetime.min.time(),
-            tzinfo=UTC
-        ).replace(hour=23, minute=59)
+def fg_prices(first, last):
+    days = max(35, (last - first).days + 7)
 
-        if abs((stamp - target).total_seconds()) > 1800:
-            previous = target - timedelta(days=1)
-            if abs((stamp - previous).total_seconds()) > 1800:
-                continue
-            target = previous
-            day = target.date()
-
-        price = float(item["quote"]["USD"]["price"])
-        if price <= 0:
-            raise RuntimeError("Invalid BTC price")
-
-        if first <= day <= final_day:
-            prices[day] = round(price, 2)
-
-    # Official dated Fear & Greed history.
-    fg_response = fetch(
-        FG_URL,
-        {"limit": "35", "format": "json"}
+    payload = get_json(
+        FG_ENDPOINT,
+        {
+            "limit": str(days),
+            "format": "json",
+        },
     )
 
-    fg_values = {}
-    for item in fg_response["data"]:
+    records = payload.get("data")
+
+    if not isinstance(records, list):
+        raise RuntimeError(
+            "Unexpected Alternative.me response"
+        )
+
+    result = {}
+
+    for entry in records:
         day = datetime.fromtimestamp(
-            int(item["timestamp"]), UTC
+            int(entry["timestamp"]), UTC
         ).date()
-        fg_values[day] = int(item["value"])
+
+        value = int(entry["value"])
+
+        if not 0 <= value <= 100:
+            raise RuntimeError(
+                f"Invalid Fear & Greed value for {day}"
+            )
+
+        result[day] = value
+
+    return result
+
+
+def main():
+    api_key = os.environ.get("CMC_API_KEY")
+
+    if not api_key:
+        raise RuntimeError(
+            "CMC_API_KEY is missing from GitHub Secrets"
+        )
+
+    html = HTML.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"const\s+D\s*=\s*(\{[^\n]*\})\s*;",
+        html,
+    )
+
+    if not match:
+        raise RuntimeError(
+            "Dashboard data object not found. "
+            "HTML was not changed."
+        )
+
+    data = json.loads(match.group(1))
+
+    closes = data["c"]
+    fear = data["g"]
+
+    if (
+        not isinstance(closes, list)
+        or not isinstance(fear, list)
+        or len(closes) != len(fear)
+        or not closes
+    ):
+        raise RuntimeError(
+            "Invalid dashboard data arrays"
+        )
+
+    first_record = date.fromisoformat(
+        data["start"]
+    )
+
+    first = first_record + timedelta(
+        days=len(closes)
+    )
+
+    last = datetime.now(UTC).date() - timedelta(
+        days=1
+    )
+
+    if first > last:
+        print("Already up to date")
+        return
+
+    if (last - first).days > 25:
+        raise RuntimeError(
+            "More than 26 days missing. "
+            "Manual review required."
+        )
+
+    prices = cmc_prices(first, last, api_key)
+    sentiments = fg_prices(first, last)
 
     added = 0
     day = first
 
-    while day <= final_day:
-        
-        if day not in prices or day not in fg_values:
-            print(f"CMC BTC price available: {day in prices}")
-            print(f"Alternative.me F&G available: {day in fg_values}")
-            print(f"Waiting for matching BTC and F&G: {day}")
-            break
+    while day <= last:
+        if day not in prices:
+            raise RuntimeError(
+                f"CMC BTC quote missing for {day}. "
+                "Dashboard unchanged."
+            )
+
+        if day not in sentiments:
+            raise RuntimeError(
+                f"Alternative.me F&G missing for {day}. "
+                "Dashboard unchanged."
+            )
 
         closes.append(prices[day])
-        fear.append(fg_values[day])
+        fear.append(sentiments[day])
 
         print(
-            f"Added {day}: BTC ${prices[day]:,.2f}, "
-            f"F&G {fg_values[day]}"
+            f"Added {day}: "
+            f"BTC ${prices[day]:,.2f}, "
+            f"F&G {sentiments[day]}"
         )
 
         added += 1
         day += timedelta(days=1)
 
-    if not added:
-        print("No new complete matching days")
-        return
-
-    # Preserve all existing indicator logic.
-    # The dashboard recalculates signals on load.
     data["c"] = closes
     data["g"] = fear
 
-    updated = json.dumps(
-        data, separators=(",", ":")
+    replacement = json.dumps(
+        data,
+        separators=(",", ":"),
+        ensure_ascii=False,
     )
 
-    html = (
+    new_html = (
         html[:match.start(1)]
-        + updated
+        + replacement
         + html[match.end(1):]
     )
 
-    FILE.write_text(html, encoding="utf-8")
-    print(f"Saved {added} new daily observations")
+    HTML.write_text(
+        new_html,
+        encoding="utf-8",
+    )
+
+    print(
+        f"Updated index.html: "
+        f"{added} day(s) appended"
+    )
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as error:
-        print(f"Update failed: {error}", file=sys.stderr)
+    except Exception as exc:
+        print(
+            "UPDATE FAILED:",
+            exc,
+            file=sys.stderr,
+        )
         sys.exit(1)
-      
+        
