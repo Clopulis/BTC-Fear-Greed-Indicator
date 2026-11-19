@@ -2,10 +2,12 @@
 name: Update BTC Fear & Greed data
 
 
+
 on:
   schedule:
     - cron: '20 0,3 * * *'
   workflow_dispatch:
+
 
 
 permissions:
