@@ -99,6 +99,10 @@ def main():
         "quotes", []
     )
 
+    print("CMC quotes returned:", len(quotes))
+    for item in quotes[-5:]:
+        print("CMC timestamp:", item.get("timestamp"))
+        
     prices = {}
 
     for item in quotes:
