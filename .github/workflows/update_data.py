@@ -95,6 +95,9 @@ def main():
             str(status.get("error_message"))
         )
 
+    print("CMC response data type:", type(cmc.get("data")).__name__)
+    print("CMC response data keys:", list(cmc.get("data", {}).keys()) if isinstance(cmc.get("data"), dict) else "not a dictionary")
+    
     quotes = cmc.get("data", {}).get("1", {}).get(
         "quotes", []
     )
