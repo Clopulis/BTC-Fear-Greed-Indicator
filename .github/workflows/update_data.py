@@ -145,6 +145,8 @@ def main():
 
     while day <= final_day:
         if day not in prices or day not in fg_values:
+            print(f"CMC BTC price available: {day in prices}")
+print(f"Alternative.me F&G available: {day in fg_values}")
             print(
                 f"Waiting for matching BTC and F&G: {day}"
             )
