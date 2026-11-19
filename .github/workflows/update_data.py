@@ -144,12 +144,11 @@ def main():
     day = first
 
     while day <= final_day:
+        
         if day not in prices or day not in fg_values:
             print(f"CMC BTC price available: {day in prices}")
-print(f"Alternative.me F&G available: {day in fg_values}")
-            print(
-                f"Waiting for matching BTC and F&G: {day}"
-            )
+            print(f"Alternative.me F&G available: {day in fg_values}")
+            print(f"Waiting for matching BTC and F&G: {day}")
             break
 
         closes.append(prices[day])
