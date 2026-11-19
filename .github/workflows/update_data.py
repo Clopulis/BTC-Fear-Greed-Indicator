@@ -43,7 +43,7 @@ def coinbase_closes(end_date):
         for row in rows:
             if not isinstance(row,list) or len(row) < 6:
                 raise RuntimeError('Malformed Coinbase candle')
-            ts = int(row[0]); closing = float(row[4])
+            ts = int(row[0]); closing = float(row[3])
             if ts % 86400 or not math.isfinite(closing) or closing <= 0:
                 raise RuntimeError('Invalid Coinbase UTC daily close')
             day = dt.datetime.fromtimestamp(ts,UTC).date()
