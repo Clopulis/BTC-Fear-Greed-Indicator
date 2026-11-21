@@ -1,6 +1,6 @@
 {
-  "name": "BTC F&G Signals",
-  "short_name": "BTC F&G Signals",
+  "name": "BTC F&G",
+  "short_name": "BTC F&G",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
