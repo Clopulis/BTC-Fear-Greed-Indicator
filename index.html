@@ -203,12 +203,12 @@ ul{padding-left:18px;margin:6px 0}
 <li><strong>SELL divergence:</strong> BTC opens ≥5% above the selected SELL-clump BTC high and F&amp;G is ≥5 points below that clump's F&amp;G high.</li>
 
 <li>Both price and F&amp;G conditions must qualify for <strong>2 consecutive completed days</strong>. The original reference clump is <strong>frozen during confirmation</strong>; the first divergence flashes on day 2.</li>
-<li>After confirmation, a divergence flashes only on days its conditions hold. A gap of <strong>1–6 days</strong> preserves the frozen reference clump but produces no signal on nonqualifying days. After <strong>7 signal-free days</strong>, reset the reference clump.</li><li><strong>Divergence invalidation &amp; reset:</strong> For BUY setups, a lower Fear &amp; Greed reading updates the reference if it extends the same clump; a break by a separate reading invalidates an unconfirmed reference. SELL setups work in the opposite direction. A confirmed divergence is invalidated if sentiment strictly breaks its frozen reference extreme. Matching the extreme does not invalidate it. If a divergence was already flashing, its signal clump becomes the new reference clump. Otherwise, a new qualifying signal clump is required. Any confirmed Regular or Strong SELL also invalidates a BUY-divergence reference, requiring a fresh qualifying BUY reference clump. Any subsequent divergence requires a fresh two-day confirmation.</li></ul></details>
+<li>After confirmation, a divergence flashes only on days its conditions hold. A gap of <strong>1–6 days</strong> preserves the frozen reference clump but produces no signal on nonqualifying days. After <strong>7 signal-free days</strong>, reset the reference clump.</li><li><strong>Divergence invalidation &amp; reset:</strong> For BUY setups, a lower Fear &amp; Greed reading updates the reference if it extends the same clump; a break by a separate reading invalidates an unconfirmed reference. SELL setups work in the opposite direction. A confirmed divergence is invalidated if sentiment strictly breaks its frozen reference extreme. Matching the extreme does not invalidate it. If a divergence was already flashing, its signal clump becomes the new reference clump. Otherwise, a new qualifying signal clump is required. Any confirmed Regular or Strong SELL also invalidates a BUY-divergence reference, requiring a fresh qualifying BUY reference clump. Likewise, any confirmed, eligible Regular or Strong BUY invalidates a SELL-divergence reference, requiring a fresh qualifying SELL reference clump. Any subsequent divergence requires a fresh two-day confirmation.</li></ul></details>
 <details><summary>4. Eligibility, macro cycles, and data</summary>
 <p><strong>Macro-cycle tops:</strong> A potential top is tracked once BTC records 30 consecutive daily opens above the previous confirmed top. The tracked level rises with each new opening high. A new macro-cycle top is confirmed only after 30 consecutive opens above the previous top, a 15% decline from the highest opening price, and 365 days without a new opening high.</p>
 <p><strong>Macro-cycle bottoms:</strong> Starting 270 days after a confirmed macro high, a daily open must be strictly below every earlier post-peak daily open to establish a potential low. Each lower open updates the candidate. One subsequent daily open above that macro high confirms the low.</p>
 <p><strong>Historical data:</strong> BTC daily opening prices come from Coinbase Exchange. The chart begins in February 2018, but its macro-cycle calculations use a December 17, 2017 historical peak of $19,475.80 from Yahoo Finance as their starting reference.</p>
-<ul><li>Reference clumps expire after <strong>18 months</strong>. Any confirmed Regular or Strong SELL signal invalidates an older BUY-divergence reference; a fresh qualifying BUY reference clump is required.</li>
+<ul><li>Reference clumps expire after <strong>18 months</strong>. Any confirmed Regular or Strong SELL signal invalidates an older BUY-divergence reference; any confirmed, eligible Regular or Strong BUY signal invalidates an older SELL-divergence reference. A fresh qualifying reference clump is required.</li>
 <li>A new macro-cycle top requires <strong>30 consecutive opens</strong> above the prior confirmed top, followed by a <strong>15% opening-price drawdown</strong> and <strong>365 days</strong> without a new opening high. Confirmation never changes earlier SELL signals retroactively.</li>
 <li>Missing values are <strong>not estimated</strong>. F&amp;G streaks are counted independently of BTC availability, but plotting a signal requires a valid BTC open.</li>
 <li>Known gaps: BTC September 4, 2020; F&amp;G April 14–16, 2018 and October 26, 2024.</li></ul></details>
@@ -374,6 +374,12 @@ const D={"start":"2018-02-01","c":[10099.99,9014.22,8787.52,9227.8,8167.9,6905.2
  D.strongClumps=refs;const divergenceRefs={};
  const buyReferenceState=[];
  const sellSignalDays=new Set(sig.filter(([,t])=>t==='sell'||t==='ssell').map(([i])=>i));
+ const rawBuySignalDays=new Set(sig.filter(([,t])=>t==='buy'||t==='sbuy').map(([i])=>i));
+ // A BUY invalidates a SELL reference only if the BUY actually qualifies.
+ // SELL divergences are resolved first, so check already-generated SELL
+ // divergence days as well as ordinary SELL days for the 60-day gate.
+ const confirmedBuyAt=i=>rawBuySignalDays.has(i)&&!sig.some(([d,t])=>
+   d<i&&d>=i-60&&(t==='sell'||t==='ssell'||t==='dsell'));
  const buySetupState=[];
  const sellSetupState=[];
  const invalidationStatus={buy:null,sell:null};
@@ -430,6 +436,21 @@ const D={"start":"2018-02-01","c":[10099.99,9014.22,8787.52,9227.8,8167.9,6905.2
        const old=sequence?.reference||pending?.reference||forcedReference||priorDisplayed;
        if(old){
          notice={day:i,side,kind:sequence?'divergence':'reference',reason:'sellSignal',oldReference:snapshot(old)};
+         invalidationHistory[side].push(notice);
+       }
+       sequence=null;
+       pending=null;
+       forcedReference=null;
+       states.clear();
+       blockedUntil=i;
+     }
+     // Any confirmed, unblocked Regular or Strong BUY invalidates an
+     // older SELL divergence reference, even if only day one was pending.
+     // Developing BUY readings do not invalidate anything.
+     if(side==='sell'&&confirmedBuyAt(i)){
+       const old=sequence?.reference||pending?.reference||forcedReference||priorDisplayed;
+       if(old){
+         notice={day:i,side,kind:sequence?'divergence':'reference',reason:'buySignal',oldReference:snapshot(old)};
          invalidationHistory[side].push(notice);
        }
        sequence=null;
@@ -503,7 +524,7 @@ const D={"start":"2018-02-01","c":[10099.99,9014.22,8787.52,9227.8,8167.9,6905.2
        reference=candidate||null;
      }
      
-     if(side==='buy'&&blockedUntil===i)reference=null;
+     if(blockedUntil===i)reference=null;
      const previous=continuingPending?pending.previous:(sequence?.previous||(winnerK>0?live.get(winnerK-1):null));
      const priceThreshold=reference?(side==='buy'?reference.price*.95:reference.price*1.05):undefined;
      const priceOK=!!reference&&good(i)&&(side==='buy'?C[i]<=priceThreshold:C[i]>=priceThreshold)
@@ -1200,7 +1221,7 @@ function updateSetup(){
    const detail=document.createElement('div');
    detail.style.fontSize='11px';
    const extreme=side==='buy'?'a lower low':'a higher high';
-   const reason=status.reason==='sellSignal'?'A confirmed SELL signal invalidated the BUY divergence reference.':status.reason==='strongSell'?'A new Strong SELL clump formed.':status.reason==='expired'?'The previous divergence reference clump reached its 18-month eligibility limit.':(status.reason==='price'?'BTC':'Fear & Greed')+' made '+extreme+' than the previous divergence reference clump.';
+   const reason=status.reason==='sellSignal'?'A confirmed SELL signal invalidated the BUY divergence reference.':status.reason==='buySignal'?'A confirmed BUY signal invalidated the SELL divergence reference.':status.reason==='strongSell'?'A new Strong SELL clump formed.':status.reason==='expired'?'The previous divergence reference clump reached its 18-month eligibility limit.':(status.reason==='price'?'BTC':'Fear & Greed')+' made '+extreme+' than the previous divergence reference clump.';
    detail.textContent=status.kind==='confirmationFailure'?'Consecutive day requirement not met. The divergence reference clump remains valid.':reason+' '+(status.resolved?'A new qualifying divergence reference clump has replaced the previous one.':'Awaiting a new qualifying divergence reference clump.');
    box.append(heading,when,detail);target.appendChild(box);
  };
