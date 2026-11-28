@@ -3,8 +3,8 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '7,37 * * * *'
-    - cron: '47,57 23 * * *'
-    - cron: '17,27,47 0 * * *'
+    - cron: '2,12,22,32,42,52 22,23 * * *'
+    - cron: '2,12,22,32,42,52 0 * * *'
 permissions:
   contents: write
 concurrency:
@@ -13,6 +13,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 245
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
